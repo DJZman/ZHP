@@ -3,6 +3,11 @@ import { logger } from '../../logger';
 
 const log = logger('signaling');
 
+// The server is a pure relay — it never inspects SDP or ICE payloads,
+// so we type them as unknown and forward as-is.
+type SdpPayload = Record<string, unknown>;
+type IcePayload = Record<string, unknown>;
+
 // Relay WebRTC offer/answer/ICE between peers — the server never inspects media.
 export function registerSignalingHandlers(
   io: Server,
@@ -11,7 +16,7 @@ export function registerSignalingHandlers(
   presence: Map<string, string>,
 ) {
   // Relay an SDP offer to a specific peer
-  socket.on('signal:offer', ({ to, offer }: { to: string; offer: RTCSessionDescriptionInit }) => {
+  socket.on('signal:offer', ({ to, offer }: { to: string; offer: SdpPayload }) => {
     const targetSocketId = presence.get(to);
     if (!targetSocketId) {
       log.warn('signal:offer target not online', { from: userId, to });
@@ -21,7 +26,7 @@ export function registerSignalingHandlers(
     io.to(targetSocketId).emit('signal:offer', { from: userId, offer });
   });
 
-  socket.on('signal:answer', ({ to, answer }: { to: string; answer: RTCSessionDescriptionInit }) => {
+  socket.on('signal:answer', ({ to, answer }: { to: string; answer: SdpPayload }) => {
     const targetSocketId = presence.get(to);
     if (!targetSocketId) {
       log.warn('signal:answer target not online', { from: userId, to });
@@ -33,7 +38,7 @@ export function registerSignalingHandlers(
 
   socket.on(
     'signal:ice',
-    ({ to, candidate }: { to: string; candidate: RTCIceCandidateInit }) => {
+    ({ to, candidate }: { to: string; candidate: IcePayload }) => {
       const targetSocketId = presence.get(to);
       if (!targetSocketId) {
         log.debug('signal:ice target not online (may have disconnected)', { from: userId, to });

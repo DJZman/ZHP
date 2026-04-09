@@ -21,6 +21,10 @@ import { createLogger } from '../utils/logger';
 
 const log = createLogger('webrtc');
 
+// Local type aliases — react-native-webrtc does not re-export these from its main index
+interface SdpInit { sdp: string; type: string | null }
+interface IceCandidateInfo { candidate?: string; sdpMLineIndex?: number | null; sdpMid?: string | null }
+
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -137,7 +141,7 @@ export async function startConnection(peerId: string): Promise<void> {
 }
 
 // Called when we receive an offer from a peer (we are the answerer)
-export async function handleOffer(peerId: string, offer: RTCSessionDescriptionInit): Promise<void> {
+export async function handleOffer(peerId: string, offer: SdpInit): Promise<void> {
   log.info('handleOffer: received', { peerId });
   let pc = connections.get(peerId);
   if (!pc) {
@@ -156,7 +160,7 @@ export async function handleOffer(peerId: string, offer: RTCSessionDescriptionIn
   getSocket().emit('signal:answer', { to: peerId, answer });
 }
 
-export async function handleAnswer(peerId: string, answer: RTCSessionDescriptionInit): Promise<void> {
+export async function handleAnswer(peerId: string, answer: SdpInit): Promise<void> {
   const pc = connections.get(peerId);
   if (!pc) {
     log.warn('handleAnswer: no connection found', { peerId });
@@ -166,7 +170,7 @@ export async function handleAnswer(peerId: string, answer: RTCSessionDescription
   log.debug('handleAnswer: remote description set', { peerId });
 }
 
-export async function handleIceCandidate(peerId: string, candidate: RTCIceCandidateInit): Promise<void> {
+export async function handleIceCandidate(peerId: string, candidate: IceCandidateInfo): Promise<void> {
   const pc = connections.get(peerId);
   if (!pc) return; // peer may have already disconnected
   try {
@@ -208,17 +212,17 @@ export function registerSignalingListeners(): void {
   socket.off('signal:answer');
   socket.off('signal:ice');
 
-  socket.on('signal:offer', ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
+  socket.on('signal:offer', ({ from, offer }: { from: string; offer: SdpInit }) => {
     log.debug('signal:offer received', { from });
     handleOffer(from, offer);
   });
 
-  socket.on('signal:answer', ({ from, answer }: { from: string; answer: RTCSessionDescriptionInit }) => {
+  socket.on('signal:answer', ({ from, answer }: { from: string; answer: SdpInit }) => {
     log.debug('signal:answer received', { from });
     handleAnswer(from, answer);
   });
 
-  socket.on('signal:ice', ({ from, candidate }: { from: string; candidate: RTCIceCandidateInit }) => {
+  socket.on('signal:ice', ({ from, candidate }: { from: string; candidate: IceCandidateInfo }) => {
     handleIceCandidate(from, candidate);
   });
 
@@ -229,20 +233,23 @@ export function registerSignalingListeners(): void {
 
 function _createPeerConnection(peerId: string): RTCPeerConnection {
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  // Cast to any for event wiring — event-target-shim types don't resolve cleanly
+  // under moduleResolution:"bundler". The addEventListener API is correct at runtime.
+  const pcAny = pc as any;
 
-  pc.addEventListener('icecandidate', (event: any) => {
+  pcAny.addEventListener('icecandidate', (event: any) => {
     if (event.candidate) {
       getSocket().emit('signal:ice', { to: peerId, candidate: event.candidate });
     }
   });
 
-  pc.addEventListener('icegatheringstatechange', () => {
-    log.debug('ICE gathering state', { peerId, state: (pc as any).iceGatheringState });
+  pcAny.addEventListener('icegatheringstatechange', () => {
+    log.debug('ICE gathering state', { peerId, state: pcAny.iceGatheringState });
   });
 
   // iceconnectionstatechange is more reliably fired in react-native-webrtc than connectionstatechange
-  pc.addEventListener('iceconnectionstatechange', () => {
-    const state = (pc as any).iceConnectionState as string;
+  pcAny.addEventListener('iceconnectionstatechange', () => {
+    const state = pcAny.iceConnectionState as string;
     log.info('ICE connection state', { peerId, state });
     if (state === 'disconnected' || state === 'failed' || state === 'closed') {
       log.warn('peer connection lost', { peerId, state });
@@ -250,7 +257,7 @@ function _createPeerConnection(peerId: string): RTCPeerConnection {
     }
   });
 
-  pc.addEventListener('track', (event: any) => {
+  pcAny.addEventListener('track', (event: any) => {
     const remoteStream: MediaStream = event.streams?.[0];
     if (remoteStream) {
       log.info('remote track received', { peerId, kind: event.track?.kind });
@@ -258,7 +265,7 @@ function _createPeerConnection(peerId: string): RTCPeerConnection {
     }
   });
 
-  pc.addEventListener('negotiationneeded', () => {
+  pcAny.addEventListener('negotiationneeded', () => {
     log.debug('negotiation needed', { peerId });
   });
 

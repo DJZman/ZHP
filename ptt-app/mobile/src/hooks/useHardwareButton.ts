@@ -41,7 +41,7 @@ export function useHardwareButton({ onDown, onUp, enabled = true }: Options) {
     }
 
     // Volume key events from native module (Android & iOS)
-    let volSub: ReturnType<typeof emitter.addListener> | null = null;
+    let volSub: { remove: () => void } | null = null;
     if (HardwareButtonModule) {
       const emitter = new NativeEventEmitter(HardwareButtonModule);
       volSub = emitter.addListener('volumeButtonEvent', (action: 'down' | 'up') => {
