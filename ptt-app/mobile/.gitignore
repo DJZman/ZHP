@@ -1,0 +1,19 @@
+node_modules/
+.env
+*.env.local
+
+# React Native build artifacts
+android/app/build/
+android/build/
+android/.gradle/
+ios/build/
+ios/Pods/
+ios/DerivedData/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro bundler cache
+.metro-health-check*
