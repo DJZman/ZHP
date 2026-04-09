@@ -4,7 +4,7 @@ import { createLogger } from '../utils/logger';
 const log = createLogger('api');
 
 // Change this to your server address
-export const API_BASE = __DEV__ ? 'http://localhost:3001' : 'https://your-ptt-server.com';
+export const API_BASE = __DEV__ ? 'http://localhost:3001' : 'https://your-app.up.railway.app';
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = storage.getString('token');
