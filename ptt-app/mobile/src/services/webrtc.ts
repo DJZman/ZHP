@@ -15,9 +15,11 @@ import {
   RTCIceCandidate,
   mediaDevices,
   MediaStream,
-  MediaStreamTrack,
 } from 'react-native-webrtc';
 import { getSocket } from './socket';
+import { createLogger } from '../utils/logger';
+
+const log = createLogger('webrtc');
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -40,10 +42,14 @@ export function setCallbacks(callbacks: {
   if (callbacks.onPeerDisconnected) onPeerDisconnected = callbacks.onPeerDisconnected;
 }
 
-// Initialise local audio (and optionally video) stream
+// Initialise local audio stream (video added separately via addVideoTrack)
 export async function initLocalStream(withVideo = false): Promise<MediaStream> {
-  if (localStream) return localStream;
+  if (localStream) {
+    log.debug('initLocalStream: reusing existing stream');
+    return localStream;
+  }
 
+  log.info('initLocalStream', { withVideo });
   localStream = await mediaDevices.getUserMedia({
     audio: true,
     video: withVideo
@@ -53,6 +59,10 @@ export async function initLocalStream(withVideo = false): Promise<MediaStream> {
 
   // Start muted — PTT unmutes when floor is granted
   localStream.getAudioTracks().forEach((t) => { t.enabled = false; });
+  log.info('local stream ready', {
+    audioTracks: localStream.getAudioTracks().length,
+    videoTracks: localStream.getVideoTracks().length,
+  });
 
   return localStream;
 }
@@ -63,44 +73,64 @@ export function getLocalStream(): MediaStream | null {
 
 // Mute / unmute the local mic across all connections (for PTT)
 export function setMicEnabled(enabled: boolean): void {
-  localStream?.getAudioTracks().forEach((t) => { t.enabled = enabled; });
+  const tracks = localStream?.getAudioTracks() ?? [];
+  tracks.forEach((t) => { t.enabled = enabled; });
+  log.debug('mic', { enabled, trackCount: tracks.length });
 }
 
-// Add video track to all existing connections (call upgrade)
+// Add video track to all existing connections (call upgrade to video)
 export async function addVideoTrack(): Promise<void> {
-  if (!localStream) return;
+  if (!localStream) {
+    log.warn('addVideoTrack called before localStream initialised');
+    return;
+  }
+  if (localStream.getVideoTracks().length > 0) {
+    log.debug('addVideoTrack: video track already present, skipping');
+    return;
+  }
 
+  log.info('addVideoTrack: capturing camera');
   const videoStream = await mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'user' } });
   const videoTrack = videoStream.getVideoTracks()[0];
-  if (!videoTrack) return;
+  if (!videoTrack) {
+    log.warn('addVideoTrack: no video track returned by getUserMedia');
+    return;
+  }
 
   localStream.addTrack(videoTrack);
+  log.info('addVideoTrack: track added to localStream');
 
   for (const [peerId, pc] of connections.entries()) {
     pc.addTrack(videoTrack, localStream);
-    // Renegotiate
+    log.debug('addVideoTrack: renegotiating with peer', { peerId });
     await _sendOffer(peerId, pc);
   }
 }
 
-// Remove video (downgrade back to audio)
+// Remove video (downgrade back to audio-only)
 export function removeVideoTrack(): void {
-  localStream?.getVideoTracks().forEach((t) => {
+  const videoTracks = localStream?.getVideoTracks() ?? [];
+  videoTracks.forEach((t) => {
     t.stop();
     localStream?.removeTrack(t);
   });
+  log.info('removeVideoTrack', { removed: videoTracks.length });
 }
 
 // Create a new peer connection to `peerId` and initiate the offer
 export async function startConnection(peerId: string): Promise<void> {
-  if (connections.has(peerId)) return; // already connected
+  if (connections.has(peerId)) {
+    log.debug('startConnection: already have connection', { peerId });
+    return;
+  }
 
+  log.info('startConnection: creating peer connection', { peerId });
   const pc = _createPeerConnection(peerId);
   connections.set(peerId, pc);
 
-  // Add local tracks
   if (localStream) {
     localStream.getTracks().forEach((t) => pc.addTrack(t, localStream!));
+    log.debug('startConnection: local tracks added', { peerId, trackCount: localStream.getTracks().length });
   }
 
   await _sendOffer(peerId, pc);
@@ -108,6 +138,7 @@ export async function startConnection(peerId: string): Promise<void> {
 
 // Called when we receive an offer from a peer (we are the answerer)
 export async function handleOffer(peerId: string, offer: RTCSessionDescriptionInit): Promise<void> {
+  log.info('handleOffer: received', { peerId });
   let pc = connections.get(peerId);
   if (!pc) {
     pc = _createPeerConnection(peerId);
@@ -120,23 +151,28 @@ export async function handleOffer(peerId: string, offer: RTCSessionDescriptionIn
   await pc.setRemoteDescription(new RTCSessionDescription(offer));
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
+  log.debug('handleOffer: answer sent', { peerId });
 
   getSocket().emit('signal:answer', { to: peerId, answer });
 }
 
 export async function handleAnswer(peerId: string, answer: RTCSessionDescriptionInit): Promise<void> {
   const pc = connections.get(peerId);
-  if (!pc) return;
+  if (!pc) {
+    log.warn('handleAnswer: no connection found', { peerId });
+    return;
+  }
   await pc.setRemoteDescription(new RTCSessionDescription(answer));
+  log.debug('handleAnswer: remote description set', { peerId });
 }
 
 export async function handleIceCandidate(peerId: string, candidate: RTCIceCandidateInit): Promise<void> {
   const pc = connections.get(peerId);
-  if (!pc) return;
+  if (!pc) return; // peer may have already disconnected
   try {
     await pc.addIceCandidate(new RTCIceCandidate(candidate));
-  } catch {
-    // Ignore stale candidates
+  } catch (err: any) {
+    log.warn('handleIceCandidate: failed to add candidate', { peerId, err: err.message });
   }
 }
 
@@ -146,11 +182,13 @@ export function closeConnection(peerId: string): void {
   if (!pc) return;
   pc.close();
   connections.delete(peerId);
+  log.info('connection closed', { peerId, remaining: connections.size });
   onPeerDisconnected?.(peerId);
 }
 
 // Tear down all connections and release media
 export function cleanup(): void {
+  log.info('cleanup: closing all connections', { count: connections.size });
   for (const [peerId, pc] of connections.entries()) {
     pc.close();
     onPeerDisconnected?.(peerId);
@@ -160,24 +198,34 @@ export function cleanup(): void {
   localStream = null;
 }
 
-// Register socket listeners for incoming signaling events
+// Register socket listeners for incoming WebRTC signaling events.
+// Call once after connecting to the socket.
 export function registerSignalingListeners(): void {
   const socket = getSocket();
 
+  // Remove any previous listeners to prevent duplicates on re-register
+  socket.off('signal:offer');
+  socket.off('signal:answer');
+  socket.off('signal:ice');
+
   socket.on('signal:offer', ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
+    log.debug('signal:offer received', { from });
     handleOffer(from, offer);
   });
 
   socket.on('signal:answer', ({ from, answer }: { from: string; answer: RTCSessionDescriptionInit }) => {
+    log.debug('signal:answer received', { from });
     handleAnswer(from, answer);
   });
 
   socket.on('signal:ice', ({ from, candidate }: { from: string; candidate: RTCIceCandidateInit }) => {
     handleIceCandidate(from, candidate);
   });
+
+  log.info('signaling listeners registered');
 }
 
-// ─── Private helpers ───────────────────────────────────────────────────────
+// ─── Private helpers ──────────────────────────────────────────────────────────
 
 function _createPeerConnection(peerId: string): RTCPeerConnection {
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
@@ -188,22 +236,39 @@ function _createPeerConnection(peerId: string): RTCPeerConnection {
     }
   });
 
-  pc.addEventListener('track', (event: any) => {
-    const remoteStream: MediaStream = event.streams?.[0];
-    if (remoteStream) onRemoteStream?.(peerId, remoteStream);
+  pc.addEventListener('icegatheringstatechange', () => {
+    log.debug('ICE gathering state', { peerId, state: (pc as any).iceGatheringState });
   });
 
-  pc.addEventListener('connectionstatechange', () => {
-    if ((pc as any).connectionState === 'disconnected' || (pc as any).connectionState === 'failed') {
+  // iceconnectionstatechange is more reliably fired in react-native-webrtc than connectionstatechange
+  pc.addEventListener('iceconnectionstatechange', () => {
+    const state = (pc as any).iceConnectionState as string;
+    log.info('ICE connection state', { peerId, state });
+    if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+      log.warn('peer connection lost', { peerId, state });
       closeConnection(peerId);
     }
   });
 
+  pc.addEventListener('track', (event: any) => {
+    const remoteStream: MediaStream = event.streams?.[0];
+    if (remoteStream) {
+      log.info('remote track received', { peerId, kind: event.track?.kind });
+      onRemoteStream?.(peerId, remoteStream);
+    }
+  });
+
+  pc.addEventListener('negotiationneeded', () => {
+    log.debug('negotiation needed', { peerId });
+  });
+
+  log.debug('peer connection created', { peerId });
   return pc;
 }
 
 async function _sendOffer(peerId: string, pc: RTCPeerConnection): Promise<void> {
   const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
   await pc.setLocalDescription(offer);
+  log.debug('offer sent', { peerId });
   getSocket().emit('signal:offer', { to: peerId, offer });
 }

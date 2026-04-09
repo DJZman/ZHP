@@ -8,7 +8,7 @@ export async function requestAppPermissions(): Promise<void> {
           PERMISSIONS.IOS.MICROPHONE,
           PERMISSIONS.IOS.CAMERA,
           PERMISSIONS.IOS.CONTACTS,
-          PERMISSIONS.IOS.BLUETOOTH_PERIPHERAL,
+          PERMISSIONS.IOS.BLUETOOTH,        // iOS 13+ — was BLUETOOTH_PERIPHERAL in older library versions
         ]
       : [
           PERMISSIONS.ANDROID.RECORD_AUDIO,

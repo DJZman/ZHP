@@ -1,5 +1,8 @@
 import { Server, Socket } from 'socket.io';
-import { v4 as uuidv4 } from 'uuid';
+import { prisma } from '../../prisma';
+import { logger } from '../../logger';
+
+const log = logger('call');
 
 export type CallType = 'voice' | 'video';
 
@@ -9,7 +12,7 @@ export function registerCallHandlers(
   userId: string,
   presence: Map<string, string>,
 ) {
-  // Caller initiates a call to another user or group
+  // Caller initiates a call to another user
   socket.on(
     'call:invite',
     ({
@@ -18,12 +21,14 @@ export function registerCallHandlers(
       callType,
       callId,
     }: {
-      to: string; // target userId (direct) or conversationId (group)
+      to: string;
       conversationId: string;
       callType: CallType;
       callId: string;
     }) => {
       const targetSocketId = presence.get(to);
+      log.info('call:invite', { from: userId, to, callType, callId, targetOnline: !!targetSocketId });
+
       if (targetSocketId) {
         io.to(targetSocketId).emit('call:incoming', {
           from: userId,
@@ -31,8 +36,10 @@ export function registerCallHandlers(
           callType,
           callId,
         });
+      } else {
+        // TODO: send VoIP push notification via APNs/FCM when peer is offline
+        log.warn('call:invite — target offline, push not yet implemented', { to, callId });
       }
-      // TODO: send push notification if targetSocketId is null (offline peer)
     },
   );
 
@@ -41,21 +48,25 @@ export function registerCallHandlers(
     'call:accept',
     ({ callId, callType, to }: { callId: string; callType: CallType; to: string }) => {
       const callerSocketId = presence.get(to);
+      log.info('call:accept', { from: userId, to, callType, callId });
       if (callerSocketId) {
         io.to(callerSocketId).emit('call:accepted', { callId, callType, from: userId });
+      } else {
+        log.warn('call:accept — caller no longer online', { callId, to });
       }
     },
   );
 
-  // Either side declines / hangs up
+  // Either side hangs up
   socket.on('call:end', ({ callId, to }: { callId: string; to: string }) => {
     const peerSocketId = presence.get(to);
+    log.info('call:end', { from: userId, to, callId });
     if (peerSocketId) {
       io.to(peerSocketId).emit('call:ended', { callId, from: userId });
     }
   });
 
-  // Text messages
+  // Text messages (persisted to DB and broadcast to room)
   socket.on(
     'message:send',
     async ({
@@ -67,15 +78,18 @@ export function registerCallHandlers(
       body: string;
       type?: 'TEXT' | 'PTT_CLIP' | 'SYSTEM';
     }) => {
-      // Persist to DB (import prisma lazily to avoid circular dep)
-      const { prisma } = await import('../../index');
-      const message = await prisma.message.create({
-        data: { conversationId, senderId: userId, body, type },
-        include: { sender: { select: { id: true, displayName: true, avatarUrl: true } } },
-      });
-
-      // Broadcast to all members in the room
-      io.to(conversationId).emit('message:receive', message);
+      log.debug('message:send', { userId, conversationId, type, bodyLen: body.length });
+      try {
+        const message = await prisma.message.create({
+          data: { conversationId, senderId: userId, body, type },
+          include: { sender: { select: { id: true, displayName: true, avatarUrl: true } } },
+        });
+        io.to(conversationId).emit('message:receive', message);
+        log.debug('message persisted and broadcast', { messageId: message.id, conversationId });
+      } catch (err: any) {
+        log.error('message:send db error', { err: err.message, userId, conversationId });
+        socket.emit('message:error', { conversationId, error: 'Failed to send message' });
+      }
     },
   );
 }

@@ -37,7 +37,8 @@ export default function PTTScreen() {
 
   const startCall = useCallback(
     async (callType: 'voice' | 'video') => {
-      await initLocalStream(callType === 'video');
+      // Always init audio-only first; addVideoTrack handles adding video on top
+      await initLocalStream(false);
       if (callType === 'video') await addVideoTrack();
 
       const targetId = participants[0]?.id;

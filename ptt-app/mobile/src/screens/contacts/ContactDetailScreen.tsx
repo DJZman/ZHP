@@ -1,11 +1,10 @@
 import React, { useCallback } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, TouchableOpacity } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { api } from '../../services/api';
 import { getSocket } from '../../services/socket';
 import { initLocalStream, addVideoTrack } from '../../services/webrtc';
 import { useCallStore } from '../../store/callStore';
-import { useAuthStore } from '../../store/authStore';
 import { v4 as uuidv4 } from 'uuid';
 
 type Params = {
@@ -17,7 +16,6 @@ export default function ContactDetailScreen() {
   const navigation = useNavigation<any>();
   const { userId, displayName, phone } = route.params;
   const { setOutgoingCall } = useCallStore();
-  const { user } = useAuthStore();
 
   const startPTT = useCallback(async () => {
     const conv = await api.findOrCreateDirect(userId);
@@ -31,7 +29,8 @@ export default function ContactDetailScreen() {
   const startCall = useCallback(
     async (callType: 'voice' | 'video') => {
       const conv = await api.findOrCreateDirect(userId);
-      await initLocalStream(callType === 'video');
+      // Always init audio-only first; addVideoTrack handles adding video on top
+      await initLocalStream(false);
       if (callType === 'video') await addVideoTrack();
 
       const callId = uuidv4();

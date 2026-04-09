@@ -1,3 +1,5 @@
+// NOTE: react-native-get-random-values is also imported first in index.js (the real entry point).
+// The import here keeps App.tsx self-contained when used in tests / Storybook.
 import React, { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';

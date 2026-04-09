@@ -6,16 +6,17 @@
 
 import { useEffect } from 'react';
 import RNCallKeep from 'react-native-callkeep';
-import { v4 as uuidv4 } from 'uuid'; // react-native compatible — install uuid@9
 import { getSocket } from '../services/socket';
 import { useCallStore } from '../store/callStore';
-import { useAuthStore } from '../store/authStore';
+import { createLogger } from '../utils/logger';
+
+const log = createLogger('callKeep');
 
 export function useCallKeep() {
   const { setIncomingCall, setActive, clearCall } = useCallStore();
-  const { user } = useAuthStore();
 
   useEffect(() => {
+    log.info('setting up CallKeep');
     RNCallKeep.setup({
       ios: {
         appName: 'PTT Walkie',
@@ -49,6 +50,7 @@ export function useCallKeep() {
         callType: 'voice' | 'video';
         callId: string;
       }) => {
+        log.info('incoming call', { from, callType, callId, conversationId });
         setIncomingCall(callId, callType, from, from, conversationId);
         RNCallKeep.displayIncomingCall(callId, from, from, 'generic', callType === 'video');
       },
@@ -57,7 +59,11 @@ export function useCallKeep() {
     // Native UI answered
     RNCallKeep.addEventListener('answerCall', ({ callUUID }: { callUUID: string }) => {
       const state = useCallStore.getState();
-      if (state.callId !== callUUID) return;
+      log.info('call answered via native UI', { callUUID, peerId: state.peerId });
+      if (state.callId !== callUUID) {
+        log.warn('answerCall UUID mismatch — ignoring', { callUUID, stateCallId: state.callId });
+        return;
+      }
 
       setActive();
       socket.emit('call:accept', {
@@ -68,9 +74,10 @@ export function useCallKeep() {
       RNCallKeep.setCurrentCallActive(callUUID);
     });
 
-    // Native UI ended
+    // Native UI ended / rejected
     RNCallKeep.addEventListener('endCall', ({ callUUID }: { callUUID: string }) => {
       const state = useCallStore.getState();
+      log.info('call ended via native UI', { callUUID, peerId: state.peerId });
       socket.emit('call:end', { callId: callUUID, to: state.peerId });
       clearCall();
     });
@@ -78,14 +85,16 @@ export function useCallKeep() {
     // Remote accepted our outgoing call
     socket.on(
       'call:accepted',
-      ({ callId }: { callId: string }) => {
+      ({ callId, callType, from }: { callId: string; callType: string; from: string }) => {
+        log.info('call accepted by remote', { callId, callType, from });
         setActive();
         RNCallKeep.setCurrentCallActive(callId);
       },
     );
 
     // Remote ended / rejected
-    socket.on('call:ended', ({ callId }: { callId: string }) => {
+    socket.on('call:ended', ({ callId, from }: { callId: string; from: string }) => {
+      log.info('call ended by remote', { callId, from });
       RNCallKeep.endCall(callId);
       clearCall();
     });
@@ -96,6 +105,7 @@ export function useCallKeep() {
       socket.off('call:ended');
       RNCallKeep.removeEventListener('answerCall');
       RNCallKeep.removeEventListener('endCall');
+      log.info('CallKeep listeners removed');
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

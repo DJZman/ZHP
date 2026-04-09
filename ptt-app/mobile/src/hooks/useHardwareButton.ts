@@ -12,6 +12,9 @@
 import { useEffect } from 'react';
 import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
 import BleManager from 'react-native-ble-manager';
+import { createLogger } from '../utils/logger';
+
+const log = createLogger('hardwareBtn');
 
 const { HardwareButtonModule } = NativeModules;
 const bleEmitter = new NativeEventEmitter(NativeModules.BleManager);
@@ -28,33 +31,53 @@ interface Options {
 
 export function useHardwareButton({ onDown, onUp, enabled = true }: Options) {
   useEffect(() => {
-    if (!enabled || !HardwareButtonModule) return;
+    if (!enabled) {
+      log.debug('hardware button hook disabled');
+      return;
+    }
 
-    const emitter = new NativeEventEmitter(HardwareButtonModule);
+    if (!HardwareButtonModule) {
+      log.warn('HardwareButtonModule not available — native module not linked?');
+    }
 
-    // Volume key events from native module
-    const volSub = emitter.addListener('volumeButtonEvent', (action: 'down' | 'up') => {
-      if (action === 'down') onDown();
-      else onUp();
-    });
+    // Volume key events from native module (Android & iOS)
+    let volSub: ReturnType<typeof emitter.addListener> | null = null;
+    if (HardwareButtonModule) {
+      const emitter = new NativeEventEmitter(HardwareButtonModule);
+      volSub = emitter.addListener('volumeButtonEvent', (action: 'down' | 'up') => {
+        log.debug('volume button', { action, platform: Platform.OS });
+        if (action === 'down') onDown();
+        else onUp();
+      });
+      log.info('volume button listener registered', { platform: Platform.OS });
+    }
 
     // Bluetooth HID PTT button
     const bleSub = bleEmitter.addListener(
       'BleManagerDidUpdateValueForCharacteristic',
-      ({ value }: { value: number[] }) => {
-        if (value?.[0] === PTT_HID_DOWN) onDown();
-        else if (value?.[0] === PTT_HID_UP) onUp();
+      ({ value, peripheral, characteristic }: { value: number[]; peripheral: string; characteristic: string }) => {
+        if (value?.[0] === PTT_HID_DOWN) {
+          log.info('BLE PTT button pressed', { peripheral, characteristic });
+          onDown();
+        } else if (value?.[0] === PTT_HID_UP) {
+          log.info('BLE PTT button released', { peripheral, characteristic });
+          onUp();
+        }
       },
     );
 
     // Start BLE scanning for known PTT accessories
-    BleManager.start({ showAlert: false }).then(() => {
-      BleManager.scan([], 5, false);
-    }).catch(() => {/* BLE unavailable */});
+    BleManager.start({ showAlert: false })
+      .then(() => {
+        log.info('BLE manager started, scanning for PTT accessories');
+        return BleManager.scan([], 5, false);
+      })
+      .catch((err: Error) => log.warn('BLE unavailable', { err: err.message }));
 
     return () => {
-      volSub.remove();
+      volSub?.remove();
       bleSub.remove();
+      log.debug('hardware button listeners removed');
     };
   }, [onDown, onUp, enabled]);
 }

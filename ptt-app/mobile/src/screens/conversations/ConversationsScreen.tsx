@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { api } from '../../services/api';
+import { useAuthStore } from '../../store/authStore';
 
 interface Conversation {
   id: string;
@@ -23,7 +24,7 @@ export default function ConversationsScreen() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
   const navigation = useNavigation<any>();
-  const { user } = require('../../store/authStore').useAuthStore();
+  const { user } = useAuthStore();
 
   const load = useCallback(async () => {
     setLoading(true);
